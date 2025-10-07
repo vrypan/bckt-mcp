@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -47,13 +48,43 @@ type InitializeResult struct {
 
 type ToolDefinition struct {
 	Name         string      `json:"name"`
-	Description  string      `json:"description"`
+	Abstract     string      `json:"abstract"`
 	InputSchema  interface{} `json:"inputSchema"`
 	OutputSchema interface{} `json:"outputSchema,omitempty"`
 }
 
 type ToolsListResult struct {
 	Tools []ToolDefinition `json:"tools"`
+}
+
+type PromptDefinition struct {
+	Name      string           `json:"name"`
+	Abstract  string           `json:"abstract,omitempty"`
+	Arguments []PromptArgument `json:"arguments,omitempty"`
+}
+
+type PromptArgument struct {
+	Name     string `json:"name"`
+	Abstract string `json:"abstract,omitempty"`
+	Required bool   `json:"required,omitempty"`
+}
+
+type PromptsListResult struct {
+	Prompts []PromptDefinition `json:"prompts"`
+}
+
+type PromptGetParams struct {
+	Name      string                 `json:"name"`
+	Arguments map[string]interface{} `json:"arguments,omitempty"`
+}
+
+type PromptMessage struct {
+	Role    string  `json:"role"`
+	Content Content `json:"content"`
+}
+
+type PromptGetResult struct {
+	Messages []PromptMessage `json:"messages"`
 }
 
 type ToolCallParams struct {
@@ -86,6 +117,7 @@ type FormatOutput struct {
 }
 
 type Config struct {
+	RootPath    string `toml:"root_path"`
 	Timezone    string `toml:"timezone"`
 	PathPattern string `toml:"path_pattern"`
 	FrontMatter struct {
@@ -97,7 +129,12 @@ type Config struct {
 	} `toml:"markdown_rules"`
 }
 
+var globalConfig *Config
+
 func main() {
+	// Load global config on startup
+	globalConfig = loadGlobalConfig()
+
 	reader := bufio.NewReader(os.Stdin)
 	writer := bufio.NewWriter(os.Stdout)
 	defer writer.Flush()
@@ -173,6 +210,10 @@ func handleRequest(req *Request) *Response {
 		return handleToolsList(req)
 	case "tools/call":
 		return handleToolCall(req)
+	case "prompts/list":
+		return handlePromptsList(req)
+	case "prompts/get":
+		return handlePromptsGet(req)
 	default:
 		return &Response{
 			JSONRPC: "2.0",
@@ -210,56 +251,112 @@ func handleInitialize(req *Request) *Response {
 				"version": "1.0.0",
 			},
 			Capabilities: map[string]interface{}{
-				"tools": map[string]interface{}{},
+				"tools":   map[string]interface{}{},
+				"prompts": map[string]interface{}{},
 			},
 		},
 	}
 }
 
 func handleToolsList(req *Request) *Response {
-	tool := ToolDefinition{
-		Name:        "bckt_format",
-		Description: "Format raw text and metadata into bckt-compatible Markdown with YAML front matter and compute file path",
-		InputSchema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"raw": map[string]interface{}{
-					"type":        "string",
-					"description": "Raw markdown content",
-				},
-				"meta": map[string]interface{}{
-					"type":        "object",
-					"description": "Metadata for front matter",
-					"properties": map[string]interface{}{
-						"title":       map[string]interface{}{"type": "string"},
-						"slug":        map[string]interface{}{"type": "string"},
-						"date":        map[string]interface{}{"type": "string"},
-						"tags":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-						"description": map[string]interface{}{"type": "string"},
-						"excerpt":     map[string]interface{}{"type": "string"},
-						"draft":       map[string]interface{}{"type": "boolean"},
-						"lang":        map[string]interface{}{"type": "string"},
+	tools := []ToolDefinition{
+		{
+			Name:     "bckt",
+			Abstract: "Format raw text and metadata into bckt-compatible Markdown with YAML front matter and compute file path. IMPORTANT: Before calling this tool, you MUST ask the user to provide: title, tags, abstract, and optionally slug, draft status, language, and excerpt. Never auto-generate metadata without explicit user confirmation.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"raw": map[string]interface{}{
+						"type":     "string",
+						"abstract": "Raw markdown content",
 					},
-					"required": []string{"title"},
+					"meta": map[string]interface{}{
+						"type":     "object",
+						"abstract": "Metadata for front matter",
+						"properties": map[string]interface{}{
+							"title":    map[string]interface{}{"type": "string"},
+							"slug":     map[string]interface{}{"type": "string"},
+							"date":     map[string]interface{}{"type": "string"},
+							"tags":     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+							"abstract": map[string]interface{}{"type": "string"},
+							"excerpt":  map[string]interface{}{"type": "string"},
+							"draft":    map[string]interface{}{"type": "boolean"},
+							"lang":     map[string]interface{}{"type": "string"},
+						},
+						"required": []string{"title"},
+					},
+					"config": map[string]interface{}{
+						"type":     "string",
+						"abstract": "Optional TOML configuration",
+					},
+					"strategy": map[string]interface{}{
+						"type":     "string",
+						"enum":     []string{"strict", "lenient"},
+						"abstract": "Validation strategy",
+					},
 				},
-				"config": map[string]interface{}{
-					"type":        "string",
-					"description": "Optional TOML configuration",
-				},
-				"strategy": map[string]interface{}{
-					"type":        "string",
-					"enum":        []string{"strict", "lenient"},
-					"description": "Validation strategy",
+				"required": []string{"raw", "meta"},
+			},
+			OutputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path":     map[string]interface{}{"type": "string"},
+					"markdown": map[string]interface{}{"type": "string"},
+					"warnings": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
 				},
 			},
-			"required": []string{"raw", "meta"},
 		},
-		OutputSchema: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"path":     map[string]interface{}{"type": "string"},
-				"markdown": map[string]interface{}{"type": "string"},
-				"warnings": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+		{
+			Name:     "bckt_preview",
+			Abstract: "Preview the formatted output without saving. Shows the generated YAML front matter, markdown, and computed file path.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"raw": map[string]interface{}{
+						"type":     "string",
+						"abstract": "Raw markdown content",
+					},
+					"meta": map[string]interface{}{
+						"type":     "object",
+						"abstract": "Metadata for front matter",
+						"properties": map[string]interface{}{
+							"title":    map[string]interface{}{"type": "string"},
+							"slug":     map[string]interface{}{"type": "string"},
+							"date":     map[string]interface{}{"type": "string"},
+							"tags":     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+							"abstract": map[string]interface{}{"type": "string"},
+							"excerpt":  map[string]interface{}{"type": "string"},
+							"draft":    map[string]interface{}{"type": "boolean"},
+							"lang":     map[string]interface{}{"type": "string"},
+						},
+						"required": []string{"title"},
+					},
+					"config":   map[string]interface{}{"type": "string", "abstract": "Optional TOML configuration"},
+					"strategy": map[string]interface{}{"type": "string", "enum": []string{"strict", "lenient"}, "abstract": "Validation strategy"},
+				},
+				"required": []string{"raw", "meta"},
+			},
+		},
+		{
+			Name:     "bckt_save",
+			Abstract: "Save the formatted markdown to the computed file path. Creates directories if needed. On first use, asks for root_path (e.g., /Users/yourname/blog) and saves it to config.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"markdown": map[string]interface{}{
+						"type":     "string",
+						"abstract": "The complete formatted markdown with front matter",
+					},
+					"path": map[string]interface{}{
+						"type":     "string",
+						"abstract": "The file path where to save (from bckt or bckt_preview output)",
+					},
+					"root_path": map[string]interface{}{
+						"type":     "string",
+						"abstract": "Root directory for blog posts (required on first save, then saved to config)",
+					},
+				},
+				"required": []string{"markdown", "path"},
 			},
 		},
 	}
@@ -267,7 +364,7 @@ func handleToolsList(req *Request) *Response {
 	return &Response{
 		JSONRPC: "2.0",
 		ID:      req.ID,
-		Result:  ToolsListResult{Tools: []ToolDefinition{tool}},
+		Result:  ToolsListResult{Tools: tools},
 	}
 }
 
@@ -281,20 +378,27 @@ func handleToolCall(req *Request) *Response {
 		}
 	}
 
-	if params.Name != "bckt_format" {
+	switch params.Name {
+	case "bckt", "bckt_preview":
+		return handleBcktFormat(req.ID, params, params.Name == "bckt_preview")
+	case "bckt_save":
+		return handleBcktSave(req.ID, params)
+	default:
 		return &Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Error:   &Error{Code: -32601, Message: "Unknown tool"},
 		}
 	}
+}
 
+func handleBcktFormat(id interface{}, params ToolCallParams, previewMode bool) *Response {
 	var input FormatInput
 	if params.Arguments != nil {
 		if err := json.Unmarshal(*params.Arguments, &input); err != nil {
 			return &Response{
 				JSONRPC: "2.0",
-				ID:      req.ID,
+				ID:      id,
 				Error:   &Error{Code: -32602, Message: "Invalid arguments"},
 			}
 		}
@@ -304,13 +408,19 @@ func handleToolCall(req *Request) *Response {
 	if err != nil {
 		return &Response{
 			JSONRPC: "2.0",
-			ID:      req.ID,
+			ID:      id,
 			Error:   &Error{Code: 1, Message: err.Error()},
 		}
 	}
 
 	// Format result as text
-	resultText := fmt.Sprintf("Path: %s\n\n%s", output.Path, output.Markdown)
+	var resultText string
+	if previewMode {
+		resultText = fmt.Sprintf("PREVIEW MODE - Not saved\n\nPath: %s\n\n%s", output.Path, output.Markdown)
+	} else {
+		resultText = fmt.Sprintf("Path: %s\n\n%s", output.Path, output.Markdown)
+	}
+
 	if len(output.Warnings) > 0 {
 		resultText = fmt.Sprintf("Warnings:\n- %s\n\n%s", strings.Join(output.Warnings, "\n- "), resultText)
 	}
@@ -321,14 +431,254 @@ func handleToolCall(req *Request) *Response {
 
 	return &Response{
 		JSONRPC: "2.0",
-		ID:      req.ID,
+		ID:      id,
 		Result:  ToolCallResult{Content: content},
 	}
 }
 
+func handleBcktSave(id interface{}, params ToolCallParams) *Response {
+	var args struct {
+		Markdown string `json:"markdown"`
+		Path     string `json:"path"`
+		RootPath string `json:"root_path,omitempty"`
+	}
+
+	if params.Arguments != nil {
+		if err := json.Unmarshal(*params.Arguments, &args); err != nil {
+			return &Response{
+				JSONRPC: "2.0",
+				ID:      id,
+				Error:   &Error{Code: -32602, Message: "Invalid arguments"},
+			}
+		}
+	}
+
+	if args.Markdown == "" || args.Path == "" {
+		return &Response{
+			JSONRPC: "2.0",
+			ID:      id,
+			Error:   &Error{Code: -32602, Message: "markdown and path are required"},
+		}
+	}
+
+	// Determine the final path
+	var finalPath string
+	pathIsRelative := !filepath.IsAbs(args.Path)
+
+	// If path is relative, we need root_path
+	if pathIsRelative {
+		currentRootPath := ""
+		if globalConfig != nil {
+			currentRootPath = globalConfig.RootPath
+		}
+
+		// Check if root_path is configured
+		if currentRootPath == "" {
+			// Root path not configured
+			if args.RootPath == "" {
+				// Not provided in arguments either
+				return &Response{
+					JSONRPC: "2.0",
+					ID:      id,
+					Error:   &Error{Code: -32602, Message: "root_path is not configured. Please provide root_path parameter (e.g., root_path: \"/Users/yourname/blog\")"},
+				}
+			}
+
+			// Save the provided root_path to config
+			if globalConfig == nil {
+				cfg := getDefaultConfig()
+				globalConfig = &cfg
+			}
+			globalConfig.RootPath = args.RootPath
+			homeDir, _ := os.UserHomeDir()
+			configPath := filepath.Join(homeDir, ".config", "bckt-mcp", "config.toml")
+			if err := saveGlobalConfig(configPath, globalConfig); err != nil {
+				return &Response{
+					JSONRPC: "2.0",
+					ID:      id,
+					Error:   &Error{Code: 1, Message: fmt.Sprintf("Failed to save root_path to config: %v", err)},
+				}
+			}
+			currentRootPath = args.RootPath
+		}
+
+		// Build absolute path
+		finalPath = filepath.Join(currentRootPath, args.Path)
+	} else {
+		// Path is already absolute
+		finalPath = args.Path
+	}
+
+	// Create directories if needed
+	dir := filepath.Dir(finalPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			ID:      id,
+			Error:   &Error{Code: 1, Message: fmt.Sprintf("Failed to create directories: %v", err)},
+		}
+	}
+
+	// Write file
+	if err := os.WriteFile(finalPath, []byte(args.Markdown), 0644); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			ID:      id,
+			Error:   &Error{Code: 1, Message: fmt.Sprintf("Failed to write file: %v", err)},
+		}
+	}
+
+	content := []Content{
+		{Type: "text", Text: fmt.Sprintf("✓ Saved to: %s", finalPath)},
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result:  ToolCallResult{Content: content},
+	}
+}
+
+func handlePromptsList(req *Request) *Response {
+	prompts := []PromptDefinition{
+		{
+			Name:     "format_blog_post",
+			Abstract: "Interactive workflow to format a blog post with user input for metadata",
+			Arguments: []PromptArgument{
+				{
+					Name:     "content",
+					Abstract: "The raw blog post content",
+					Required: true,
+				},
+			},
+		},
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		ID:      req.ID,
+		Result:  PromptsListResult{Prompts: prompts},
+	}
+}
+
+func handlePromptsGet(req *Request) *Response {
+	var params PromptGetParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error:   &Error{Code: -32602, Message: "Invalid params"},
+		}
+	}
+
+	if params.Name != "format_blog_post" {
+		return &Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error:   &Error{Code: -32602, Message: "Unknown prompt"},
+		}
+	}
+
+	content := ""
+	if params.Arguments != nil {
+		if c, ok := params.Arguments["content"].(string); ok {
+			content = c
+		}
+	}
+
+	instructions := `You are helping the user format a blog post for their bckt static site.
+
+Follow these steps:
+1. Ask the user for the blog post title
+2. Ask for tags (comma-separated list)
+3. Ask for a brief abstract (SEO meta abstract)
+4. Ask if they want to specify a custom slug (or auto-generate from title)
+5. Ask if this should be a draft (true/false)
+6. Ask for the language code (default: en)
+7. Ask for an excerpt (optional, short summary for listings)
+
+For each one of these steps, provide the user with a value based on the content.
+
+Once you have all the information, use the bckt tool with:
+- raw: the content provided below
+- meta: object with title, tags (array), abstract, slug (optional), draft, lang, excerpt (optional)
+
+Content to format:
+` + content
+
+	messages := []PromptMessage{
+		{
+			Role:    "user",
+			Content: Content{Type: "text", Text: instructions},
+		},
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		ID:      req.ID,
+		Result:  PromptGetResult{Messages: messages},
+	}
+}
+
+func loadGlobalConfig() *Config {
+	// Try to load from ~/.config/bckt-mcp/config.toml
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+
+	configPath := filepath.Join(homeDir, ".config", "bckt-mcp", "config.toml")
+
+	// Check if config file exists
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		// Create default config file
+		cfg := getDefaultConfig()
+		if err := saveGlobalConfig(configPath, &cfg); err == nil {
+			fmt.Fprintf(os.Stderr, "Created default config at: %s\n", configPath)
+		}
+		return &cfg
+	}
+
+	// Load existing config
+	var cfg Config
+	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to load config from %s: %v\n", configPath, err)
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "Loaded config from: %s\n", configPath)
+	return &cfg
+}
+
+func saveGlobalConfig(path string, cfg *Config) error {
+	// Create directory if needed
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	// Create file
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// Write TOML
+	encoder := toml.NewEncoder(f)
+	return encoder.Encode(cfg)
+}
+
 func formatContent(input FormatInput) (*FormatOutput, error) {
-	// Load configuration
-	cfg := getDefaultConfig()
+	// Start with global config or defaults
+	var cfg Config
+	if globalConfig != nil {
+		cfg = *globalConfig
+	} else {
+		cfg = getDefaultConfig()
+	}
+
+	// Override with inline config if provided
 	if input.Config != "" {
 		if err := toml.Unmarshal([]byte(input.Config), &cfg); err == nil {
 			// Config loaded successfully
@@ -361,15 +711,21 @@ func formatContent(input FormatInput) (*FormatOutput, error) {
 
 	// Auto-generate date if missing
 	if _, ok := frontMatter["date"]; !ok {
-		frontMatter["date"] = time.Now().Format(time.RFC3339)
+		// Load timezone
+		loc, err := time.LoadLocation(cfg.Timezone)
+		if err != nil {
+			loc = time.UTC
+		}
+		// Format: "2006-01-02 15:04:05 -0700"
+		frontMatter["date"] = time.Now().In(loc).Format("2006-01-02 15:04:05 -0700")
 	}
 
 	// Ensure required fields have defaults
 	if _, ok := frontMatter["tags"]; !ok {
 		frontMatter["tags"] = []string{}
 	}
-	if _, ok := frontMatter["description"]; !ok {
-		frontMatter["description"] = ""
+	if _, ok := frontMatter["abstract"]; !ok {
+		frontMatter["abstract"] = ""
 	}
 	if _, ok := frontMatter["excerpt"]; !ok {
 		frontMatter["excerpt"] = ""
@@ -396,10 +752,16 @@ func formatContent(input FormatInput) (*FormatOutput, error) {
 	// Compute path
 	dateStr := frontMatter["date"].(string)
 	slug := frontMatter["slug"].(string)
-	path := computePath(cfg.PathPattern, dateStr, slug)
+	relativePath := computePath(cfg.PathPattern, dateStr, slug)
+
+	// Prepend root path if configured
+	fullPath := relativePath
+	if cfg.RootPath != "" {
+		fullPath = filepath.Join(cfg.RootPath, relativePath)
+	}
 
 	return &FormatOutput{
-		Path:     path,
+		Path:     fullPath,
 		Markdown: markdown,
 		Warnings: warnings,
 	}, nil
@@ -407,9 +769,10 @@ func formatContent(input FormatInput) (*FormatOutput, error) {
 
 func getDefaultConfig() Config {
 	var cfg Config
-	cfg.Timezone = "Europe/Athens"
-	cfg.PathPattern = "content/{yyyy}/{MM}/{slug}/index.md"
-	cfg.FrontMatter.Required = []string{"title", "slug", "date", "tags", "description", "draft", "lang", "excerpt"}
+	cfg.RootPath = "" // Must be set by user on first save
+	cfg.Timezone = "UTC"
+	cfg.PathPattern = "posts/{yyyy}/{yyyy}-{MM}-{DD}-{slug}/{slug}.md"
+	cfg.FrontMatter.Required = []string{"title", "slug", "date", "tags", "abstract", "draft", "lang", "excerpt"}
 	cfg.FrontMatter.Defaults = map[string]interface{}{
 		"lang":  "en",
 		"draft": false,
@@ -491,11 +854,26 @@ func wrapText(text string, width int) string {
 }
 
 func computePath(pattern, date, slug string) string {
-	yyyy := date[:4]
-	mm := date[5:7]
+	// Date format: "2006-01-02 15:04:05 -0700" or RFC3339
+	// Extract yyyy-MM-dd part
+	datePart := date
+	if len(date) >= 10 {
+		datePart = date[:10] // Get "2025-10-06"
+	}
+
+	parts := strings.Split(datePart, "-")
+	if len(parts) < 3 {
+		// Fallback if date format is unexpected
+		return pattern
+	}
+
+	yyyy := parts[0]
+	mm := parts[1]
+	dd := parts[2]
 
 	path := strings.ReplaceAll(pattern, "{yyyy}", yyyy)
 	path = strings.ReplaceAll(path, "{MM}", mm)
+	path = strings.ReplaceAll(path, "{DD}", dd)
 	path = strings.ReplaceAll(path, "{slug}", slug)
 
 	return path
