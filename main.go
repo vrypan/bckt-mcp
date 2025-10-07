@@ -3,12 +3,15 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
 
 	"bckt-mcp/commands"
 )
+
+var version = "dev"
 
 // JSON-RPC 2.0 structures (main protocol only)
 type Request struct {
@@ -90,6 +93,12 @@ type ToolCallParams struct {
 var globalConfig *commands.Config
 
 func main() {
+	// Check for version flag
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("bckt-mcp version %s\n", version)
+		os.Exit(0)
+	}
+
 	// Load global config on startup
 	globalConfig = commands.LoadGlobalConfig()
 
@@ -206,7 +215,7 @@ func handleInitialize(req *Request) *Response {
 			ProtocolVersion: selectedVersion,
 			ServerInfo: map[string]string{
 				"name":    "bckt-mcp",
-				"version": "1.0.0",
+				"version": version,
 			},
 			Capabilities: map[string]interface{}{
 				"tools":   map[string]interface{}{},
