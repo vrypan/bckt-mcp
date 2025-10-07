@@ -1,6 +1,8 @@
 # bckt-mcp
 
-A Model Context Protocol (MCP) server that formats blog posts for static site generators. Designed to work with Claude Desktop and other MCP-compatible clients.
+A Model Context Protocol (MCP) server that formats blog posts for [bckt](https://github.com/vrypan/bckt). 
+
+It is designed to work with Claude Desktop and other MCP-compatible clients.
 
 ## Features
 
@@ -61,7 +63,7 @@ Or if installed via Homebrew:
 
 ### First-Time Setup
 
-On first use, run the setup wizard through Claude:
+On first use, run the setup wizard **through Claude**:
 
 ```
 setup bckt
