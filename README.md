@@ -1,4 +1,6 @@
-# bckt-mcp
+# bckt-mcp 
+
+(I can't believe I did a typo on the repo name...)
 
 A Model Context Protocol (MCP) server that formats blog posts for [bckt](https://github.com/vrypan/bckt). 
 
